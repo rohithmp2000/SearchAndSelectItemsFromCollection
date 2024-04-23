@@ -1,0 +1,401 @@
+@page "/FastTagTollProcess"
+@* @page "/FastTagTollProcess/{id:int}/{Readonly:bool}/{Verify:bool}" *@
+@page "/FastTagTollProcess/{encryptedId}/{Readonly:bool}/{Verify:bool}"
+
+@using Core.BaseModels.Finance.Transactions;
+@using Core.IDataServices.Finance.Transactions;
+@using System.IO;
+@using NPOI.HSSF.UserModel;
+@using NPOI.SS.UserModel;
+@using OfficeOpenXml;
+@using System.Threading;
+@attribute [Authorize]
+@inject AuthenticationStateProvider auth
+@inject NavigationManager NavigationManager
+@inject IRoleService<RoleModel> Irole
+@inject MudBlazor.ISnackbar snackbar
+@inject IDialogService DialogService
+@inject IFastTagService IFTService
+
+<style>
+    .mud-table-container {
+        width: 100%;
+        overflow-y: hidden !important;
+    }
+</style>
+
+<MudPaper Style="padding-bottom: 1px;">
+    <MudToolBar>
+        <MudText Typo="Typo.h6" Style="font-weight:500;">FastTag Toll Transaction</MudText>
+    </MudToolBar>
+    <MudDivider />
+    <MudItem Style="padding: 26px; background-color: whitesmoke; margin: 38px; padding-top: 38px; border-radius: 4px; box-shadow: inset 0px 0px 4px 0px rgba(0,0,0,0.3);">
+
+        <MudPaper Style="padding-bottom: 15px; min-width:min-content;">
+            <MudGrid>
+                <MudItem xs="12" Style="padding: 48px; padding-bottom: 32px;">
+                    <EditForm id="FastTagProcessForm" OnValidSubmit="OnValidSubmit" Model="MainModel">
+                        <MudGrid>
+                            <MudItem xs="4">
+                                <MudSelect ReadOnly="@ListReadonly" Label="Select Document" Value="@selectedDocumentNumber" ToStringFunc="@((e)=> e?.DocumentNumber)" T="FastTagProcessModel" ValueChanged="(Value) => DocNoChange(Value)" Variant="Variant.Outlined" Margin="Margin.Dense" AnchorOrigin="Origin.BottomCenter" AdornmentColor="Color.Secondary">
+                                    @foreach (var item in DocumentNumbers)
+                                    {
+                                        <MudSelectItem Value="@item">@item.DocumentNumber</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudTextField @bind-Value="@MainModel.ProcessDocumentNumber" ReadOnly="true" Label="Process Document" Variant="Variant.Outlined" Margin="Margin.Dense"></MudTextField>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudDatePicker @bind-Date="@MainModel.DocumentDate" ReadOnly="@Readonly" Label="Document Date" Variant="Variant.Outlined" Margin="Margin.Dense" DisableToolbar="true" Editable="true" DateFormat="dd/MM/yyyy" For="@(()=> MainModel.DocumentDate)" Required />
+                            </MudItem>
+                            <MudItem xs="12">
+                                <MudTextField @bind-Value="@MainModel.Narration" ReadOnly="@Readonly" Lines="3" Label="Narration" Variant="Variant.Outlined" Margin="Margin.Dense" For="@(()=> MainModel.Narration)"></MudTextField>
+                            </MudItem>
+                            <MudItem xs="6">
+                                <MudGrid>
+                                    <MudItem xs="6">
+                                        <b>
+                                            Total Debit Amount &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                                            : @collection.Sum(e => e.DebitAmount).ToString("c")
+                                        </b>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <b>
+                                            Total Reimbursable Amount &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                                            : @(!Readonly ? collection.Where(e => e.IsChecked).Where(e => e.Reimbursable).Sum(e => e.DebitAmount).ToString("c") : collection.Where(e => e.Reimbursable).Sum(e => e.DebitAmount).ToString("c"))
+                                        </b>
+                                    </MudItem>
+                                    @if (!Readonly)
+                                    {
+                                        <MudItem xs="12"><b>Total Selected Debit Amount &nbsp;: @* @selectedcollection.Sum(e => e.DebitAmount).ToString("c") *@ @collection.Where(e => e.IsChecked).Sum(e => e.DebitAmount).ToString("c")</b></MudItem>
+                                    }
+                                </MudGrid>
+                            </MudItem>
+                            <MudItem xs="6" Style="align-self: flex-end; text-align: right;">
+                                @if (!Readonly)
+                                {
+                                    <MudButton Style="width: 24%;" Variant="Variant.Filled" Color="Color.Success" ButtonType="ButtonType.Submit">Submit</MudButton>
+                                    <MudButton Style="width: 24%; margin-left: 1%;" Variant="Variant.Filled" Color="Color.Primary" OnClick="Cancel">Close</MudButton>
+                                }
+                                else
+                                {
+                                    <MudButton Style="width: 24%; margin-left: 76%; height: 110%;" Variant="Variant.Filled" Color="Color.Primary" OnClick="Cancel">Close</MudButton>
+                                }
+                            </MudItem>
+                        </MudGrid>
+                        <ObjectGraphDataAnnotationsValidator />
+                        <ValidationSummary />
+                    </EditForm>
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        @if (Verify || MainModel != null && MainModel.AuthLevelId == 99)
+        {
+            <MudItem Style="margin-top:30px; text-align-last: center;">
+                <AutherizationStatusComponent DocTypeID="@FasTagDocTypeID" DocDate="@DocDate" DocType="@DocType" DocNumber="@DocNumber" PageToRedirectLink="@PageToRedirectLink" DocumentID="MainModel.FastTagProcessID" OnApprove="ApproveEntry"></AutherizationStatusComponent>
+            </MudItem>
+        }
+        <MudPaper Style="margin-top:30px;">
+            <MudItem xs="12" Style="padding: 26px 26px 26px 26px;">
+                <div Class="fullborder" style="padding: 0px; overflow-y: auto;">
+                    <MudTable Items="@collection" Context="item" Filter="new Func<FastTagModel, bool>(search)" RowsPerPage="100" Style="padding: 0px;width: max-content;" Elevation="0" Dense="true" Hover="true" Striped="true">
+                        @* MultiSelection="!Readonly" @bind-SelectedItems="selectedcollection" *@
+                        <ToolBarContent>
+                            <MudText Typo="Typo.h6">Transactions List</MudText>
+                            <MudSpacer></MudSpacer>
+                            <MudTextField @bind-Value="searchplatenumber" Placeholder="Search Licence Plate No..." Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0">
+                            </MudTextField>
+                        </ToolBarContent>
+                        <HeaderContent>
+                            @if (!Readonly)
+                            {
+                                <MudTh><MudCheckBox Value="allselected" ValueChanged="(bool isChecked) => SelectAll(isChecked)"></MudCheckBox></MudTh>
+                            }
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.TransactionDateTime)" InitialDirection="SortDirection.Ascending"> DateTime</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.NumberPlate)" InitialDirection="SortDirection.Ascending">Licence Plate No</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.BranchName)" InitialDirection="SortDirection.Ascending">Branch Name</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.TripNumber)" InitialDirection="SortDirection.Ascending">Trip No</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.Destination)" InitialDirection="SortDirection.Ascending">Destination</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.Reimbursable)" InitialDirection="SortDirection.Ascending">Reimbursable</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.DebitAmount)" InitialDirection="SortDirection.Ascending">Amount(DR)</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.PlazaCode)" InitialDirection="SortDirection.Ascending">Plaza Code</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.Description)" InitialDirection="SortDirection.Ascending">Transaction Description</MudTableSortLabel></MudTh>
+                            <MudTh><MudTableSortLabel SortBy="new Func<FastTagModel, object>(x=> x.TransactionID)" InitialDirection="SortDirection.Ascending">Unique Transaction ID</MudTableSortLabel></MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            @if (!Readonly)
+                            {
+                                @* <MudTd><MudCheckBox @bind-Value="@item.IsChecked"></MudCheckBox></MudTd> *@
+                                <MudTd><MudCheckBox Checked="@item.IsChecked" CheckedChanged="(bool itemcheck) => checkitem(item, itemcheck, collection)"></MudCheckBox></MudTd>
+                            }
+                            <MudTd DataLabel="Transaction DateTime">@item.TransactionDateTime</MudTd>
+                            <MudTd DataLabel="NumberPlate">@item.NumberPlate</MudTd>
+                            <MudTd DataLabel="Branch Name">@item.BranchName</MudTd>
+                            <MudTd DataLabel="Trip No">@item.TripNumberDisplay</MudTd>
+                            <MudTd DataLabel="Destination">@item.Destination</MudTd>
+                            <MudTh><MudCheckBox ReadOnly="@Readonly" T="bool" @bind-Checked="@item.Reimbursable"></MudCheckBox></MudTh>
+                            <MudTd DataLabel="Debit Amount">@item.DebitAmount</MudTd>
+                            <MudTd DataLabel="PlazaCode">@item.PlazaCode</MudTd>
+                            <MudTd DataLabel="TransactionDescription">@item.Description</MudTd>
+                            <MudTd DataLabel="Unique Transaction ID">@item.TransactionID</MudTd>
+                        </RowTemplate>
+                        <PagerContent>
+                            <MudTablePager PageSizeOptions="new int[] {5 ,10 ,50 , 100 , 150, 200}" />
+                        </PagerContent>
+                    </MudTable>
+                </div>
+            </MudItem>
+        </MudPaper>
+
+    </MudItem>
+</MudPaper>
+
+@code {
+
+    private FastTagProcessModel MainModel = new FastTagProcessModel();
+    private HashSet<FastTagModel> selectedcollection = new HashSet<FastTagModel>();
+    private List<FastTagModel> collection = new List<FastTagModel>();
+    private List<FastTagProcessModel> DocumentNumbers = new List<FastTagProcessModel>();
+    private string searchplatenumber = "";
+    public int branchID;
+    private string UserID = null;
+    private FastTagProcessModel selectedDocumentNumber;
+
+    public DateTime? DocDate { get; set; }
+    public string DocType { get; set; }
+    int FasTagDocTypeID = 120;
+    [Parameter]
+    public string PageToRedirectLink { get; set; }
+    public string DocNumber { get; set; }
+    public bool HasPermissionIFastTagServiceEdit { get; set; } = false;
+    public bool ListReadonly { get; set; }
+
+
+    // [Parameter]
+    public int? id { get; set; }
+    [Parameter]
+    public string encryptedId { get; set; }
+    [Parameter]
+    public bool Readonly { get; set; }
+    [Parameter]
+    public bool Verify { get; set; }
+
+    // [Parameter]
+    // public string encryptedReadonly { get; set; }
+    // [Parameter]
+    // public string encryptedVerify { get; set; }
+
+    //public int? id { get; set; }
+    // public bool Readonly { get; set; }
+    // public bool Verify { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        CancellationTokenSource ctc = new CancellationTokenSource();
+        HasPermissionIFastTagServiceEdit = await Irole.HasClaim(FasTagDocTypeID.ToString(), "Edit", ctc.Token);
+        // HasPermissionSundryPaymentServiceApprove = await Irole.HasClaim(FasTagDocTypeID.ToString(), "Approve", ctc.Token);
+
+        // var authprov = await auth.GetAuthenticationStateAsync();
+        // var user = authprov.User;
+        // branchID = int.Parse(user.Claims.First(x => x.Type == "BranchID").Value);
+        // MainModel.BranchID = branchID;
+        // MainModel.NatureOfTransaction = "FastTag";
+        // UserID = user.Identity.Name;
+
+        // if (id != null && Readonly == true)
+        // {
+        //     MainModel = IFTService.GetProcessViewModel(id);
+        //     selectedDocumentNumber = MainModel;
+
+        //     collection = IFTService.GetProcessViewCollection(id).ToList();
+        // }
+        // else if (id == 0 && Readonly == false)
+        // {
+        //     DocumentNumbers = IFTService.SelectPendingFTDoc().ToList();
+        // }
+        // //collection = IFTService.SelectByBranch(branchID).ToList();
+        // // DocNumber = MainModel.DocumentNumber;
+        // // DocDate = MainModel.DocumentDate;
+        // DocType = "FasTag";
+    }
+
+    protected override void OnParametersSet()
+    {
+        id = Convert.ToInt32(EncryptionHelper.Decrypt(encryptedId));
+        // Readonly = Convert.ToBoolean(EncryptionHelper.Decrypt(encryptedReadonly));
+        // Verify = Convert.ToBoolean(EncryptionHelper.Decrypt(encryptedVerify));
+
+        LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        var authprov = await auth.GetAuthenticationStateAsync();
+        var user = authprov.User;
+
+        if (id != null && id != 0) //&& Readonly == true)
+        {
+            ListReadonly = true;
+            MainModel = IFTService.GetProcessViewModel(id);
+            selectedDocumentNumber = MainModel;
+            collection = IFTService.GetProcessViewCollection(id).ToList();
+
+            foreach (var item in collection)
+            {
+                selectedcollection.Add(item);
+            }
+            //selectedcollection
+        }
+        else if (id == 0 && Readonly == false)
+        {
+            ListReadonly = false;
+            DocumentNumbers = IFTService.SelectPendingFTDoc().ToList();
+        }
+        DocType = "FasTag";
+        branchID = int.Parse(user.Claims.First(x => x.Type == "BranchID").Value);
+        MainModel.BranchID = branchID;
+        MainModel.NatureOfTransaction = "FastTag";
+        UserID = user.Identity.Name;
+
+        if (collection.Any() && collection.All(e => e.IsChecked))
+        {
+            allselected = true;
+        }
+        else
+        {
+            allselected = false;
+        }
+    }
+
+    protected async Task ApproveEntry(DataApprovedStatus aprvd)
+    {
+        if (aprvd.IsApprove)
+        {
+            try
+            {
+                var authprov = await auth.GetAuthenticationStateAsync();
+                var user = authprov.User;
+                MainModel.UserInfo.UserID = user.Identity.Name;
+                //MainModel.BranchID = branchID;
+                IFTService.Approve(MainModel.FastTagProcessID, MainModel.UserInfo.UserID, aprvd.Remarks);
+                snackbar.Add("Approved Successfully", Severity.Success);
+            }
+            catch (Exception ex)
+            {
+                snackbar.Add(ex.Message, Severity.Error);
+            }
+        }
+    }
+
+    private async Task DocNoChange(FastTagProcessModel model)
+    {
+        selectedDocumentNumber = model;
+        // MainModel.BranchID = branchID;
+        // MainModel.FastTagUploadID = model.FastTagUploadID;
+        // MainModel.PaymentMode = "Bank";
+        // MainModel.PaymentTool = model.PaymentTool;
+        // MainModel.BankCharges = model.BankCharges;
+        // MainModel.PaymentArdCode = model.PaymentArdCode;
+        // MainModel.PaymentCoaID = model.PaymentCoaID;
+        // MainModel.NatureOfTransaction = selectedDocumentNumber.NatureOfTransaction;
+        MainModel.FastTagProcessUploadID = selectedDocumentNumber.FastTagProcessID;
+        MainModel.DocumentNumber = selectedDocumentNumber.DocumentNumber;
+        MainModel.BranchID = branchID;
+        GetCollection(MainModel);
+    }
+
+    public async Task GetCollection(FastTagProcessModel model)
+    {
+        collection = IFTService.SelectByBranch(model.FastTagProcessUploadID, branchID).ToList();
+
+        if (collection.Count == 0)
+        {
+            bool? result = await DialogService.ShowMessageBox(
+                "Oops !",
+                (MarkupString)$"No FastTag Transactions allotted for this Branch under DocNo - <b>{model.DocumentNumber}</b> !");
+        }
+    }
+
+    public async Task Cancel()
+    {
+        NavigationManager.NavigateTo("/FastTagTollProcessView");
+    }
+
+    IEnumerable<FastTagModel> FilteredCollection { get; set; }
+    public bool allselected = false;
+
+    public void checkitem(FastTagModel item, bool check, ICollection<FastTagModel> collection)
+    {
+        item.IsChecked = check;
+    }
+
+    public void SelectAll(bool isChecked)
+    {
+        FilteredCollection = collection.Where(item => search(item));
+        foreach (var item in FilteredCollection)
+        {
+            item.IsChecked = isChecked;
+        }
+    }
+
+    private bool search(FastTagModel model)
+    {
+        if(collection.All(e => e.IsChecked))
+        {
+            allselected = true;
+        }
+        else
+        {
+            allselected = false;
+        }
+
+        if (string.IsNullOrEmpty(searchplatenumber))
+        {
+            return true;
+        }
+        return model.NumberPlate?.Contains(searchplatenumber, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    // void UpdateFilteredCollection(string searchString)
+    // {
+    //     // Apply your filter to the collection
+    //     FilteredCollection = collection.Where(item => item.NumberPlate.Contains(searchString, StringComparison.InvariantCultureIgnoreCase));
+    // }
+
+    public async Task OnValidSubmit()
+    {
+        try
+        {
+            var authprov = await auth.GetAuthenticationStateAsync();
+            var user = authprov.User;
+            UserID = user.Identity.Name;
+
+            MainModel.UserInfo.UserID = UserID;
+            //MainModel.TotalAmount = selectedcollection.Sum(e => e.DebitAmount);
+            MainModel.TotalAmount = collection.Where(e => e.IsChecked).Sum(e => e.DebitAmount);
+            //MainModel.FastTagModelList = selectedcollection.ToList();
+            MainModel.FastTagModelList = collection.Where(e => e.IsChecked).ToList();
+            if (MainModel.FastTagModelList.Count != 0)
+            {
+                IFTService.UpdateProcess(MainModel);
+                snackbar.Add("Saved Successfully", Severity.Success);
+                NavigationManager.NavigateTo("/FastTagTollProcessView");
+                // MainModel = new();
+                // collection = new();
+            }
+            else
+            {
+                bool? result = await DialogService.ShowMessageBox(
+                    "Oops !",
+                    "Please select Transactions before Submitting !");
+            }
+        }
+        catch (Exception ex)
+        {
+            snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+}
